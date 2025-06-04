@@ -1,17 +1,29 @@
 using UnityEngine;
 using System.Collections;
+using System.Collections.Generic;
 
 public class HunterBehaviour : MonoBehaviour
 {
     private Animator animator;
     private Rigidbody rb;
 
-    private enum HunterState { Idle, Walking, Falling }
+    private enum HunterState { Idle, Walking, Falling, Hunting }
     private HunterState state = HunterState.Idle;
 
-    [SerializeField] private float walkSpeed = 2f;
+    [Header("Movement Settings")]
+    [SerializeField] private float walkSpeed = 3f;
+    [SerializeField] private float huntingSpeed = 5f;
+    [SerializeField] private float detectionRadius = 15f;
+    [SerializeField] private float catchDistance = 2f;
+
+    [Header("Targeting")]
+    [SerializeField] private LayerMask komodoLayer = 1; // Layer untuk komodo
+    [SerializeField] private float targetUpdateInterval = 0.5f; // Update target setiap 0.5 detik
+
     private Vector3 targetPosition;
-    
+    private Transform targetKomodo; // Reference ke komodo yang sedang dikejar
+    private Coroutine huntingCoroutine;
+
     // Flag untuk melacak apakah ini hunter pertama
     private static bool isFirstHunterSpawned = false;
 
@@ -48,48 +60,40 @@ public class HunterBehaviour : MonoBehaviour
         // Konfigurasi animator
         if (animator != null)
         {
-            // Verifikasi parameter animator
             ValidateAnimatorParameters();
-            
+
             // Reset state animator
             animator.SetBool("isWalking", false);
             animator.SetBool("isFalling", false);
-            
+
             // Pastikan animator aktif
             animator.enabled = true;
-            
-            // Debug info
-            Debug.Log("Animator configured: hasController=" + 
-                     (animator.runtimeAnimatorController != null) + 
-                     ", speed=" + animator.speed + 
+
+            Debug.Log("Animator configured: hasController=" +
+                     (animator.runtimeAnimatorController != null) +
+                     ", speed=" + animator.speed +
                      ", enabled=" + animator.enabled);
 
-            // PENTING: Jika ini hunter pertama, berikan waktu untuk animator menginisialisasi
             if (!isFirstHunterSpawned)
             {
                 isFirstHunterSpawned = true;
-                // Delay singkat untuk memastikan animator terinisialisasi dengan baik
                 StartCoroutine(DelayedAnimatorRefresh());
             }
         }
     }
 
-    // Coroutine untuk memastikan animator terinisialisasi dengan baik pada hunter pertama
     IEnumerator DelayedAnimatorRefresh()
     {
-        // Tunggu dua frame agar Unity mengupdate sistem animasi
         yield return null;
         yield return null;
-        
-        // Refresh animator state
-        if (animator != null && state == HunterState.Walking)
+
+        if (animator != null && (state == HunterState.Walking || state == HunterState.Hunting))
         {
-            // Toggle state untuk memaksa refresh
             bool currentWalkState = animator.GetBool("isWalking");
             animator.SetBool("isWalking", !currentWalkState);
-            yield return null; // Tunggu satu frame
+            yield return null;
             animator.SetBool("isWalking", true);
-            
+
             Debug.Log("DelayedAnimatorRefresh: Refreshing walking animation state");
         }
     }
@@ -117,39 +121,178 @@ public class HunterBehaviour : MonoBehaviour
 
     void Update()
     {
-        // Hunter bergerak ke target
+        // Bergerak sesuai state
         if (state == HunterState.Walking)
         {
-            // Bergerak ke target
-            transform.position = Vector3.MoveTowards(transform.position, targetPosition, walkSpeed * Time.deltaTime);
-            
-            // Rotasi menghadap ke arah gerakan
-            Vector3 moveDirection = (targetPosition - transform.position).normalized;
-            if (moveDirection != Vector3.zero)
-            {
-                transform.rotation = Quaternion.LookRotation(moveDirection);
-            }
+            MoveToTarget(walkSpeed);
+        }
+        else if (state == HunterState.Hunting)
+        {
+            MoveToTarget(huntingSpeed);
 
-            // Debug logging
-            if (Time.frameCount % 120 == 0) // Setiap ~2 detik
+            // Cek apakah sudah sampai ke komodo
+            if (targetKomodo != null)
             {
-                if (animator != null)
+                float distanceToKomodo = Vector3.Distance(transform.position, targetKomodo.position);
+                if (distanceToKomodo <= catchDistance)
                 {
-                    Debug.Log(gameObject.name + " - Walking animation state: isWalking=" + 
-                              animator.GetBool("isWalking") + 
-                              ", animator enabled=" + animator.enabled +
-                              ", animator speed=" + animator.speed);
+                    CatchKomodo();
                 }
+            }
+        }
+
+        // Debug logging
+        if (Time.frameCount % 120 == 0) // Setiap ~2 detik
+        {
+            if (animator != null)
+            {
+                Debug.Log(gameObject.name + " - State: " + state +
+                          ", Animation: isWalking=" + animator.GetBool("isWalking") +
+                          ", Target: " + (targetKomodo != null ? targetKomodo.name : "None"));
             }
         }
     }
 
+    void MoveToTarget(float speed)
+    {
+        // Bergerak ke target
+        transform.position = Vector3.MoveTowards(transform.position, targetPosition, speed * Time.deltaTime);
+
+        // Rotasi menghadap ke arah gerakan
+        Vector3 moveDirection = (targetPosition - transform.position).normalized;
+        if (moveDirection != Vector3.zero)
+        {
+            transform.rotation = Quaternion.LookRotation(moveDirection);
+        }
+    }
+
+    // Method untuk memulai berburu komodo terdekat
+    public void StartHuntingKomodo()
+    {
+        Debug.Log("StartHuntingKomodo called for " + gameObject.name);
+
+        // Cari komodo terdekat
+        Transform nearestKomodo = FindNearestKomodo();
+
+        if (nearestKomodo != null)
+        {
+            StartHuntingSpecificKomodo(nearestKomodo);
+        }
+        else
+        {
+            Debug.LogWarning("Tidak ada komodo yang ditemukan dalam radius deteksi!");
+            // Fallback ke behavior lama jika tidak ada komodo
+            StartWalking(GetRandomPosition());
+        }
+    }
+
+    // Method untuk berburu komodo spesifik
+    public void StartHuntingSpecificKomodo(Transform komodo)
+    {
+        if (komodo == null) return;
+
+        Debug.Log(gameObject.name + " mulai berburu " + komodo.name);
+
+        state = HunterState.Hunting;
+        targetKomodo = komodo;
+        targetPosition = komodo.position;
+
+        // Setup rigidbody
+        if (rb != null)
+        {
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+            rb.useGravity = false;
+            rb.isKinematic = true;
+        }
+
+        // Setup animator
+        SetupWalkingAnimation();
+
+        // Mulai coroutine untuk update target position
+        if (huntingCoroutine != null)
+        {
+            StopCoroutine(huntingCoroutine);
+        }
+        huntingCoroutine = StartCoroutine(UpdateTargetPosition());
+    }
+
+    // Coroutine untuk terus update posisi target komodo
+    IEnumerator UpdateTargetPosition()
+    {
+        while (state == HunterState.Hunting && targetKomodo != null)
+        {
+            // Update target position ke posisi komodo saat ini
+            targetPosition = targetKomodo.position;
+
+            // Cek apakah komodo masih dalam jangkauan
+            float distanceToKomodo = Vector3.Distance(transform.position, targetKomodo.position);
+            if (distanceToKomodo > detectionRadius * 2) // Jika terlalu jauh, berhenti berburu
+            {
+                Debug.Log(gameObject.name + " kehilangan jejak " + targetKomodo.name);
+                StartHuntingKomodo(); // Cari komodo terdekat lagi
+                yield break;
+            }
+
+            yield return new WaitForSeconds(targetUpdateInterval);
+        }
+    }
+
+    // Method untuk mencari komodo terdekat
+    Transform FindNearestKomodo()
+    {
+        // Cari semua objek dengan komponen KomodoPatrol
+        KomodoPatrol[] allKomodos = FindObjectsOfType<KomodoPatrol>();
+
+        if (allKomodos.Length == 0)
+        {
+            Debug.LogWarning("Tidak ada komodo yang ditemukan di scene!");
+            return null;
+        }
+
+        Transform nearestKomodo = null;
+        float nearestDistance = float.MaxValue;
+
+        foreach (KomodoPatrol komodo in allKomodos)
+        {
+            float distance = Vector3.Distance(transform.position, komodo.transform.position);
+
+            // Cek apakah dalam radius deteksi
+            if (distance <= detectionRadius && distance < nearestDistance)
+            {
+                nearestDistance = distance;
+                nearestKomodo = komodo.transform;
+            }
+        }
+
+        if (nearestKomodo != null)
+        {
+            Debug.Log(gameObject.name + " menemukan komodo terdekat: " + nearestKomodo.name +
+                     " pada jarak " + nearestDistance.ToString("F1") + "m");
+        }
+
+        return nearestKomodo;
+    }
+
+    // Method ketika berhasil menangkap komodo
+    void CatchKomodo()
+    {
+        Debug.Log(gameObject.name + " berhasil menangkap " + targetKomodo.name + "!");
+
+        // Bisa tambahkan efek atau suara di sini
+
+        // Mulai falling sequence
+        StartFalling();
+    }
+
+    // Method fallback untuk walking ke posisi random (behavior lama)
     public void StartWalking(Vector3 target)
     {
         Debug.Log("StartWalking called for " + gameObject.name);
-        
+
         state = HunterState.Walking;
         targetPosition = target;
+        targetKomodo = null; // Reset target komodo
 
         // Arahkan menghadap target
         Vector3 direction = (target - transform.position).normalized;
@@ -161,68 +304,59 @@ public class HunterBehaviour : MonoBehaviour
         // Set rigidbody
         if (rb != null)
         {
-            rb.linearVelocity = Vector3.zero;  // Gunakan velocity, bukan linearVelocity
+            rb.linearVelocity = Vector3.zero;
             rb.angularVelocity = Vector3.zero;
             rb.useGravity = false;
             rb.isKinematic = true;
-            Debug.Log("Rigidbody set for walking: useGravity=false, isKinematic=true");
         }
 
-        // Set animator
+        SetupWalkingAnimation();
+    }
+
+    void SetupWalkingAnimation()
+    {
         if (animator != null)
         {
-            // PENTING: Pastikan animator aktif dan memiliki controller
             if (animator.runtimeAnimatorController == null)
             {
                 Debug.LogError("RuntimeAnimatorController missing! Animation won't work!");
             }
-            
-            // Pastikan animator aktif
+
             animator.enabled = true;
-            
-            // Set speed
             if (animator.speed <= 0) animator.speed = 1f;
-            
-            // PENTING: Set state dengan Trigger juga selain Bool
-            // Ini akan memaksa transisi di state machine
+
+            // Set triggers
             if (HasParameter("Walk", AnimatorControllerParameterType.Trigger))
             {
                 animator.ResetTrigger("Fall");
                 animator.SetTrigger("Walk");
             }
-            
+
             // Set bool parameters
             animator.SetBool("isWalking", true);
             animator.SetBool("isFalling", false);
-            
+
             Debug.Log("Animator set for walking: isWalking=true, speed=" + animator.speed);
-            
-            // PENTING: Mulai coroutine untuk memastikan animasi berjalan
+
             StartCoroutine(EnsureWalkingAnimation());
         }
     }
-    
-    // Coroutine untuk memastikan animasi walking berjalan
+
     IEnumerator EnsureWalkingAnimation()
     {
-        // Tunggu sebentar untuk memastikan animasi sudah diproses
         yield return new WaitForSeconds(0.1f);
-        
-        // Periksa apakah animator masih dalam kondisi yang benar
-        if (animator != null && state == HunterState.Walking)
+
+        if (animator != null && (state == HunterState.Walking || state == HunterState.Hunting))
         {
-            // Jika tetap tidak berjalan, coba paksa refresh
-            if (!animator.GetCurrentAnimatorStateInfo(0).IsName("Walk") && 
+            if (!animator.GetCurrentAnimatorStateInfo(0).IsName("Walk") &&
                 !animator.GetCurrentAnimatorStateInfo(0).IsName("Walking"))
             {
                 Debug.Log("Forcing walking animation refresh");
-                
-                // Toggle parameter untuk memaksa perubahan state
+
                 animator.SetBool("isWalking", false);
                 yield return null;
                 animator.SetBool("isWalking", true);
-                
-                // Set trigger jika ada
+
                 if (HasParameter("Walk", AnimatorControllerParameterType.Trigger))
                 {
                     animator.SetTrigger("Walk");
@@ -234,7 +368,14 @@ public class HunterBehaviour : MonoBehaviour
     public void StartFalling()
     {
         state = HunterState.Falling;
-        
+
+        // Stop hunting coroutine
+        if (huntingCoroutine != null)
+        {
+            StopCoroutine(huntingCoroutine);
+            huntingCoroutine = null;
+        }
+
         Debug.Log("Starting falling sequence for " + gameObject.name);
 
         // Set rigidbody untuk jatuh
@@ -242,50 +383,43 @@ public class HunterBehaviour : MonoBehaviour
         {
             rb.linearVelocity = Vector3.zero;
             rb.angularVelocity = Vector3.zero;
-            
-            // PENTING: Aktifkan fisica untuk jatuh
             rb.useGravity = true;
             rb.isKinematic = false;
-            
-            // Berikan dorongan ke bawah
             rb.AddForce(Vector3.down * 2f, ForceMode.Impulse);
-            
-            Debug.Log("Rigidbody set for falling: useGravity=true, isKinematic=false");
         }
 
         // Set animator untuk animasi jatuh
         if (animator != null)
         {
-            // PENTING: Perbaiki bug - isWalking harus FALSE, bukan true
             animator.SetBool("isWalking", false);
             animator.SetBool("isFalling", true);
-            
-            // Gunakan trigger jika ada
+
             if (HasParameter("Fall", AnimatorControllerParameterType.Trigger))
             {
                 animator.ResetTrigger("Walk");
                 animator.SetTrigger("Fall");
             }
-            
-            // Pastikan animator aktif
+
             if (animator.speed == 0) animator.speed = 1f;
-            
-            Debug.Log("Animator set for falling: isWalking=false, isFalling=true");
-        }
-        else
-        {
-            Debug.LogError("Animator tidak ditemukan saat mencoba memulai animasi falling");
         }
 
         // Hancurkan object setelah beberapa waktu
         Destroy(gameObject, 2f);
     }
-    
-    // Helper method untuk memeriksa parameter di animator
+
+    // Helper method untuk posisi random (fallback)
+    Vector3 GetRandomPosition()
+    {
+        Vector3 randomDirection = Random.insideUnitSphere * 20f;
+        randomDirection.y = 0; // Keep on ground level
+        randomDirection += transform.position;
+        return randomDirection;
+    }
+
     private bool HasParameter(string paramName, AnimatorControllerParameterType type)
     {
         if (animator == null || animator.runtimeAnimatorController == null) return false;
-        
+
         foreach (AnimatorControllerParameter param in animator.parameters)
         {
             if (param.name == paramName && param.type == type)
@@ -294,5 +428,24 @@ public class HunterBehaviour : MonoBehaviour
             }
         }
         return false;
+    }
+
+    // Gizmos untuk debug
+    void OnDrawGizmosSelected()
+    {
+        // Gambar radius deteksi
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawWireSphere(transform.position, detectionRadius);
+
+        // Gambar garis ke target
+        if (targetKomodo != null)
+        {
+            Gizmos.color = Color.red;
+            Gizmos.DrawLine(transform.position, targetKomodo.position);
+        }
+
+        // Gambar radius tangkap
+        Gizmos.color = Color.green;
+        Gizmos.DrawWireSphere(transform.position, catchDistance);
     }
 }

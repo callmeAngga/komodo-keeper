@@ -163,3 +163,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   walkSpeed: 3
+  huntingSpeed: 4
+  detectionRadius: 30
+  catchDistance: 2
+  komodoLayer:
+    serializedVersion: 2
+    m_Bits: 1
+  targetUpdateInterval: 0.5
