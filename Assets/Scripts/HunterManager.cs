@@ -3,16 +3,32 @@ using System.Collections;
 
 public class HunterManager : MonoBehaviour
 {
+    [Header("Hunter Settings")]
     public GameObject hunterPrefab;
     public Vector3[] targetPoints;
-    public float respawnDelay = 5f; 
+    public float respawnDelay = 5f;
+    public float hunterTimeout = 30f; // Waktu sebelum hunter menangkap komodo
+    
+    [Header("References")]
+    public GameUIManager gameUIManager;
 
     private GameObject currentHunter;
     private bool canSpawn = true;
     private bool isFirstSpawn = true;
+    private Coroutine hunterTimeoutCoroutine;
 
     void Start()
     {
+        // Cari GameUIManager jika tidak diassign
+        if (gameUIManager == null)
+        {
+            gameUIManager = FindObjectOfType<GameUIManager>();
+            if (gameUIManager == null)
+            {
+                Debug.LogError("GameUIManager tidak ditemukan! Pastikan ada GameUIManager di scene.");
+            }
+        }
+        
         // Gunakan coroutine untuk spawn hunter
         StartCoroutine(SpawnHunterRoutine());
     }
@@ -66,6 +82,13 @@ public class HunterManager : MonoBehaviour
                 Debug.LogError("HunterBehaviour component missing on prefab!");
             }
             
+            // Mulai timer untuk hunter timeout
+            if (hunterTimeoutCoroutine != null)
+            {
+                StopCoroutine(hunterTimeoutCoroutine);
+            }
+            hunterTimeoutCoroutine = StartCoroutine(HunterTimeoutSequence());
+            
             // Update status first spawn
             isFirstSpawn = false;
         }
@@ -86,12 +109,45 @@ public class HunterManager : MonoBehaviour
         behaviour.StartWalking(targetPos);
         Debug.Log("Hunter started walking to " + targetPos);
     }
+    
+    // Coroutine untuk menangani timeout hunter
+    IEnumerator HunterTimeoutSequence()
+    {
+        Debug.Log("Hunter timeout timer dimulai: " + hunterTimeout + " detik");
+        yield return new WaitForSeconds(hunterTimeout);
+        
+        // Jika hunter masih ada setelah timeout (belum dilaporkan)
+        if (currentHunter != null)
+        {
+            Debug.Log("Hunter timeout! Menangkap komodo dan menghilang.");
+            
+            // Kurangi populasi komodo
+            if (gameUIManager != null)
+            {
+                gameUIManager.DecreaseKomodoPopulation();
+            }
+            
+            // Hancurkan hunter tanpa animasi falling
+            Destroy(currentHunter);
+            currentHunter = null;
+            
+            // Mulai delay untuk spawn berikutnya
+            StartCoroutine(DelayNextSpawn());
+        }
+    }
 
     public void ReportHunter()
     {
         if (currentHunter != null)
         {
             Debug.Log("Reporting hunter: " + currentHunter.name);
+            
+            // Stop timeout coroutine karena hunter sudah dilaporkan
+            if (hunterTimeoutCoroutine != null)
+            {
+                StopCoroutine(hunterTimeoutCoroutine);
+                hunterTimeoutCoroutine = null;
+            }
             
             var behaviour = currentHunter.GetComponent<HunterBehaviour>();
             if (behaviour != null)
